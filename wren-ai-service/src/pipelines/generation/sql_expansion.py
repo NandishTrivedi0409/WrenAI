@@ -1,7 +1,6 @@
 import logging
 import sys
-from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional
 
 from hamilton import base
 from hamilton.async_driver import AsyncDriver
@@ -12,8 +11,7 @@ from pydantic import BaseModel
 from src.core.engine import Engine
 from src.core.pipeline import BasicPipeline
 from src.core.provider import LLMProvider
-from src.pipelines.common import SQLGenPostProcessor, show_current_time
-from src.utils import async_timer, timer
+from src.pipelines.generation.utils.sql import SQLGenPostProcessor
 from src.web.v1.services import Configuration
 from src.web.v1.services.ask import AskHistory
 
@@ -22,80 +20,76 @@ logger = logging.getLogger("wren-ai-service")
 
 sql_expansion_system_prompt = """
 ### TASK ###
-You are a great data analyst. You are now given a task to expand original SQL by adding more columns or add more keywords such as DISTINCT.
+You are a great data analyst. You are now given a task to expand original SQL from user input.
 
 ### INSTRUCTIONS ###
-- Columns are given from the user's input
-- Columns to be added must belong to the given database schema; if no such column exists, keep SQL_QUERY_STRING empty
+- Columns are given from the user's adjustment request
+- Columns to be adjusted must belong to the given database schema; if no such column exists, keep sql empty string
+- You can add/delete/modify columns, add/delete/modify keywords such as DISTINCT or apply aggregate functions on columns
+- Consider current time from user input if user's adjustment request is related to date and time
 
-### OUTPUT FORMAT ###
-Please return the result in the following JSON format:
+### FINAL ANSWER FORMAT ###
+The final answer must be a SQL query in JSON format:
 
 {
-    "results": [
-        {"sql": <SQL_QUERY_STRING>}
-    ]
+    "sql": <SQL_QUERY_STRING>
 }
 """
 
 sql_expansion_user_prompt_template = """
-SQL: {{sql}}
-
-Database Schema:
+### DATABASE SCHEMA ###
 {% for document in documents %}
     {{ document }}
 {% endfor %}
 
-User's input: {{query}}
+### QUESTION ###
+User's adjustment request: {{query}}
+Original SQL: {{sql}}
 Current Time: {{ current_time }}
 """
 
 
 ## Start of Pipeline
-@timer
 @observe(capture_input=False)
 def prompt(
     query: str,
     documents: List[str],
     history: AskHistory,
-    timezone: Configuration.Timezone,
+    configuration: Configuration,
     prompt_builder: PromptBuilder,
 ) -> dict:
     return prompt_builder.run(
         query=query,
         documents=documents,
         sql=history.sql,
-        current_time=show_current_time(timezone),
+        current_time=configuration.show_current_time(),
     )
 
 
-@async_timer
 @observe(as_type="generation", capture_input=False)
 async def generate_sql_expansion(prompt: dict, generator: Any) -> dict:
-    return await generator.run(prompt=prompt.get("prompt"))
+    return await generator(prompt=prompt.get("prompt"))
 
 
-@async_timer
 @observe(capture_input=False)
 async def post_process(
     generate_sql_expansion: dict,
     post_processor: SQLGenPostProcessor,
+    engine_timeout: float,
     project_id: str | None = None,
 ) -> dict:
     return await post_processor.run(
-        generate_sql_expansion.get("replies"), project_id=project_id
+        generate_sql_expansion.get("replies"),
+        timeout=engine_timeout,
+        project_id=project_id,
     )
 
 
 ## End of Pipeline
 
 
-class ExpandedResult(BaseModel):
+class ExpansionResult(BaseModel):
     sql: str
-
-
-class ExpansionResults(BaseModel):
-    results: list[ExpandedResult]
 
 
 SQL_EXPANSION_MODEL_KWARGS = {
@@ -103,7 +97,7 @@ SQL_EXPANSION_MODEL_KWARGS = {
         "type": "json_schema",
         "json_schema": {
             "name": "sql_results",
-            "schema": ExpansionResults.model_json_schema(),
+            "schema": ExpansionResult.model_json_schema(),
         },
     }
 }
@@ -114,6 +108,7 @@ class SQLExpansion(BasicPipeline):
         self,
         llm_provider: LLMProvider,
         engine: Engine,
+        engine_timeout: Optional[float] = 30.0,
         **kwargs,
     ):
         self._components = {
@@ -127,45 +122,21 @@ class SQLExpansion(BasicPipeline):
             "post_processor": SQLGenPostProcessor(engine=engine),
         }
 
+        self._configs = {
+            "engine_timeout": engine_timeout,
+        }
+
         super().__init__(
             AsyncDriver({}, sys.modules[__name__], result_builder=base.DictResult())
         )
 
-    def visualize(
-        self,
-        query: str,
-        contexts: List[str],
-        history: AskHistory,
-        timezone: Configuration.Timezone,
-        project_id: str | None = None,
-    ) -> None:
-        destination = "outputs/pipelines/generation"
-        if not Path(destination).exists():
-            Path(destination).mkdir(parents=True, exist_ok=True)
-
-        self._pipe.visualize_execution(
-            ["post_process"],
-            output_file_path=f"{destination}/sql_expansion.dot",
-            inputs={
-                "query": query,
-                "documents": contexts,
-                "history": history,
-                "project_id": project_id,
-                "timezone": timezone,
-                **self._components,
-            },
-            show_legend=True,
-            orient="LR",
-        )
-
-    @async_timer
     @observe(name="Sql Expansion Generation")
     async def run(
         self,
         query: str,
         contexts: List[str],
         history: AskHistory,
-        timezone: Configuration.Timezone = Configuration().timezone,
+        configuration: Configuration = Configuration(),
         project_id: str | None = None,
     ):
         logger.info("Sql Expansion Generation pipeline is running...")
@@ -176,8 +147,9 @@ class SQLExpansion(BasicPipeline):
                 "documents": contexts,
                 "history": history,
                 "project_id": project_id,
-                "timezone": timezone,
+                "configuration": configuration,
                 **self._components,
+                **self._configs,
             },
         )
 
@@ -191,5 +163,5 @@ if __name__ == "__main__":
         query="query",
         contexts=[],
         history=AskHistory(sql="SELECT * FROM table", summary="Summary", steps=[]),
-        timezone=Configuration.Timezone(name="UTC", utc_offset="+00:00"),
+        configuration=Configuration(),
     )

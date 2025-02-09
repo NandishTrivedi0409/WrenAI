@@ -1,6 +1,5 @@
 import logging
 import sys
-from pathlib import Path
 from typing import Any
 
 import orjson
@@ -67,7 +66,7 @@ def prompt(
 
 @observe(as_type="generation", capture_input=False)
 async def generate(prompt: dict, generator: Any) -> dict:
-    return await generator.run(prompt=prompt.get("prompt"))
+    return await generator(prompt=prompt.get("prompt"))
 
 
 @observe(capture_input=False)
@@ -87,6 +86,22 @@ def normalize(generate: dict) -> dict:
     normalized = wrapper(reply)
 
     return {model["name"]: model for model in normalized["models"]}
+
+
+@observe(capture_input=False)
+def output(normalize: dict, picked_models: list[dict]) -> dict:
+    def _filter(enriched: list[dict], columns: list[dict]) -> list[dict]:
+        valid_columns = [col["name"] for col in columns]
+
+        return [col for col in enriched if col["name"] in valid_columns]
+
+    models = {model["name"]: model for model in picked_models}
+
+    return {
+        name: {**data, "columns": _filter(data["columns"], models[name]["columns"])}
+        for name, data in normalize.items()
+        if name in models
+    }
 
 
 ## End of Pipeline
@@ -200,35 +215,10 @@ class SemanticsDescription(BasicPipeline):
                 generation_kwargs=SEMANTICS_DESCRIPTION_MODEL_KWARGS,
             ),
         }
-        self._final = "normalize"
+        self._final = "output"
 
         super().__init__(
             AsyncDriver({}, sys.modules[__name__], result_builder=base.DictResult())
-        )
-
-    def visualize(
-        self,
-        user_prompt: str,
-        selected_models: list[str],
-        mdl: dict,
-        language: str = "en",
-    ) -> None:
-        destination = "outputs/pipelines/generation"
-        if not Path(destination).exists():
-            Path(destination).mkdir(parents=True, exist_ok=True)
-
-        self._pipe.visualize_execution(
-            [self._final],
-            output_file_path=f"{destination}/semantics_description.dot",
-            inputs={
-                "user_prompt": user_prompt,
-                "selected_models": selected_models,
-                "mdl": mdl,
-                "language": language,
-                **self._components,
-            },
-            show_legend=True,
-            orient="LR",
         )
 
     @observe(name="Semantics Description Generation")

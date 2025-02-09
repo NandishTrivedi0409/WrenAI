@@ -1,7 +1,6 @@
 import logging
 import sys
-from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from hamilton import base
 from hamilton.async_driver import AsyncDriver
@@ -12,10 +11,9 @@ from pydantic import BaseModel
 from src.core.engine import Engine
 from src.core.pipeline import BasicPipeline
 from src.core.provider import LLMProvider
-from src.pipelines.common import TEXT_TO_SQL_RULES, SQLBreakdownGenPostProcessor
-from src.utils import (
-    async_timer,
-    timer,
+from src.pipelines.generation.utils.sql import (
+    TEXT_TO_SQL_RULES,
+    SQLBreakdownGenPostProcessor,
 )
 
 logger = logging.getLogger("wren-ai-service")
@@ -115,7 +113,6 @@ Let's think step by step.
 
 
 ## Start of Pipeline
-@timer
 @observe(capture_input=False)
 def prompt(
     query: str,
@@ -129,21 +126,22 @@ def prompt(
     )
 
 
-@async_timer
 @observe(as_type="generation", capture_input=False)
 async def generate_sql_details(prompt: dict, generator: Any) -> dict:
-    return await generator.run(prompt=prompt.get("prompt"))
+    return await generator(prompt=prompt.get("prompt"))
 
 
-@async_timer
 @observe(capture_input=False)
 async def post_process(
     generate_sql_details: dict,
     post_processor: SQLBreakdownGenPostProcessor,
+    engine_timeout: float,
     project_id: str | None = None,
 ) -> dict:
     return await post_processor.run(
-        generate_sql_details.get("replies"), project_id=project_id
+        generate_sql_details.get("replies"),
+        timeout=engine_timeout,
+        project_id=project_id,
     )
 
 
@@ -175,6 +173,7 @@ class SQLBreakdown(BasicPipeline):
         self,
         llm_provider: LLMProvider,
         engine: Engine,
+        engine_timeout: Optional[float] = 30.0,
         **kwargs,
     ):
         self._components = {
@@ -190,39 +189,13 @@ class SQLBreakdown(BasicPipeline):
 
         self._configs = {
             "text_to_sql_rules": TEXT_TO_SQL_RULES,
+            "engine_timeout": engine_timeout,
         }
 
         super().__init__(
             AsyncDriver({}, sys.modules[__name__], result_builder=base.DictResult())
         )
 
-    def visualize(
-        self,
-        query: str,
-        sql: str,
-        language: str = "English",
-        project_id: str | None = None,
-    ) -> None:
-        destination = "outputs/pipelines/generation"
-        if not Path(destination).exists():
-            Path(destination).mkdir(parents=True, exist_ok=True)
-
-        self._pipe.visualize_execution(
-            ["post_process"],
-            output_file_path=f"{destination}/sql_breakdown.dot",
-            inputs={
-                "query": query,
-                "sql": sql,
-                "project_id": project_id,
-                "language": language,
-                **self._components,
-                **self._configs,
-            },
-            show_legend=True,
-            orient="LR",
-        )
-
-    @async_timer
     @observe(name="SQL Breakdown Generation")
     async def run(
         self,

@@ -1,8 +1,7 @@
 import logging
 import sys
 from enum import Enum
-from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import orjson
 from hamilton import base
@@ -41,7 +40,7 @@ def prompt(
 
 @observe(as_type="generation", capture_input=False)
 async def generate(prompt: dict, generator: Any) -> dict:
-    return await generator.run(prompt=prompt.get("prompt"))
+    return await generator(prompt=prompt.get("prompt"))
 
 
 @observe(capture_input=False)
@@ -171,6 +170,7 @@ class RelationshipRecommendation(BasicPipeline):
         self,
         llm_provider: LLMProvider,
         engine: Engine,
+        engine_timeout: Optional[float] = 30.0,
         **_,
     ):
         self._components = {
@@ -182,31 +182,14 @@ class RelationshipRecommendation(BasicPipeline):
             "engine": engine,
         }
 
+        self._configs = {
+            "engine_timeout": engine_timeout,
+        }
+
         self._final = "validated"
 
         super().__init__(
             AsyncDriver({}, sys.modules[__name__], result_builder=base.DictResult())
-        )
-
-    def visualize(
-        self,
-        mdl: dict,
-        language: str = "English",
-    ) -> None:
-        destination = "outputs/pipelines/generation"
-        if not Path(destination).exists():
-            Path(destination).mkdir(parents=True, exist_ok=True)
-
-        self._pipe.visualize_execution(
-            [self._final],
-            output_file_path=f"{destination}/relationship_recommendation.dot",
-            inputs={
-                "mdl": mdl,
-                "language": language,
-                **self._components,
-            },
-            show_legend=True,
-            orient="LR",
         )
 
     @observe(name="Relationship Recommendation")
@@ -222,6 +205,7 @@ class RelationshipRecommendation(BasicPipeline):
                 "mdl": mdl,
                 "language": language,
                 **self._components,
+                **self._configs,
             },
         )
 

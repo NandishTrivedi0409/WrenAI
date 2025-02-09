@@ -53,7 +53,8 @@ export interface AskHistory {
 }
 
 export interface AskConfigurations {
-  language: string;
+  language?: string;
+  timezone?: { name: string };
 }
 
 export interface AskInput {
@@ -70,6 +71,7 @@ export interface AsyncQueryResponse {
 export enum AskResultStatus {
   UNDERSTANDING = 'UNDERSTANDING',
   SEARCHING = 'SEARCHING',
+  PLANNING = 'PLANNING',
   GENERATING = 'GENERATING',
   CORRECTING = 'CORRECTING',
   FINISHED = 'FINISHED',
@@ -118,7 +120,9 @@ export type AskResult = AskResponse<
     viewId?: number | null;
   }>,
   AskResultStatus
->;
+> & {
+  intentReasoning?: string;
+};
 
 export enum RecommendationQuestionStatus {
   GENERATING = 'GENERATING',
@@ -139,10 +143,7 @@ export type RecommendationQuestionsInput = {
   maxCategories?: number;
   regenerate?: boolean; // Optional regenerate questions (default: false)
   // Optional configuration settings
-  configuration?: {
-    // Optional language (default: "English")
-    language?: string;
-  };
+  configuration?: AskConfigurations;
 };
 
 export type RecommendationQuestion = {
@@ -157,3 +158,80 @@ export type RecommendationQuestionsResult = AskResponse<
   },
   RecommendationQuestionStatus
 >;
+
+// text-based answer
+export interface TextBasedAnswerInput {
+  query: string;
+  sql: string;
+  sqlData: any;
+  threadId?: string;
+  userId?: string;
+  configurations?: AskConfigurations;
+}
+
+export enum TextBasedAnswerStatus {
+  PREPROCESSING = 'PREPROCESSING',
+  SUCCEEDED = 'SUCCEEDED',
+  FAILED = 'FAILED',
+}
+
+export interface TextBasedAnswerResult {
+  status: TextBasedAnswerStatus;
+  numRowsUsedInLLM?: number;
+  error?: WrenAIError;
+}
+
+export enum ChartStatus {
+  FETCHING = 'FETCHING',
+  GENERATING = 'GENERATING',
+  FINISHED = 'FINISHED',
+  FAILED = 'FAILED',
+  STOPPED = 'STOPPED',
+}
+
+export enum ChartType {
+  BAR = 'bar',
+  GROUPED_BAR = 'grouped_bar',
+  STACKED_BAR = 'stacked_bar',
+  LINE = 'line',
+  MULTI_LINE = 'multi_line',
+  PIE = 'pie',
+  AREA = 'area',
+}
+
+export interface ChartInput {
+  query: string;
+  sql: string;
+  projectId?: string;
+  configurations?: AskConfigurations;
+}
+
+export interface ChartAdjustmentOption {
+  chartType: ChartType;
+  xAxis?: string;
+  yAxis?: string;
+  xOffset?: string;
+  color?: string;
+  theta?: string;
+}
+
+export interface ChartAdjustmentInput {
+  query: string;
+  sql: string;
+  adjustmentOption: ChartAdjustmentOption;
+  chartSchema: Record<string, any>;
+  projectId?: string;
+  configurations?: AskConfigurations;
+}
+
+export interface ChartResponse {
+  reasoning: string;
+  chartType: ChartType;
+  chartSchema: Record<string, any>;
+}
+
+export interface ChartResult {
+  status: ChartStatus;
+  response?: ChartResponse;
+  error?: WrenAIError;
+}

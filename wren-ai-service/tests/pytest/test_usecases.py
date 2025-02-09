@@ -10,6 +10,8 @@ from datetime import datetime
 import aiohttp
 import orjson
 import requests
+import sqlparse
+import yaml
 
 from demo.utils import (
     _get_connection_info,
@@ -34,16 +36,16 @@ def test_load_mdl_and_questions(usecases: list[str]):
             with open(f"tests/data/usecases/{usecase}/mdl.json", "r") as f:
                 mdl_str = orjson.dumps(json.load(f)).decode("utf-8")
 
-            with open(f"tests/data/usecases/{usecase}/questions.json", "r") as f:
-                questions = json.load(f)
+            with open(f"tests/data/usecases/{usecase}/questions.yaml", "r") as f:
+                questions = yaml.safe_load(f)
 
             mdls_and_questions[usecase] = {
                 "mdl_str": mdl_str,
-                "questions": questions,
+                "questions": [question["question"] for question in questions],
             }
         except FileNotFoundError:
             raise Exception(
-                f"tests/data/usecases/{usecase}/mdl.json or tests/data/usecases/{usecase}/questions.json not found"
+                f"tests/data/usecases/{usecase}/mdl.json or tests/data/usecases/{usecase}/questions.yaml not found"
             )
 
     return mdls_and_questions
@@ -143,10 +145,19 @@ async def ask_questions(questions: list[str], url: str, semantics_preperation_id
     return await asyncio.gather(*tasks)
 
 
+def str_presenter(dumper, data):
+    """configures yaml for dumping multiline strings
+    Ref: https://stackoverflow.com/questions/8640959/how-can-i-control-what-scalar-form-pyyaml-uses-for-my-data"""
+    if len(data.splitlines()) > 1:  # check for multiline string
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
 if __name__ == "__main__":
     usecase_to_dataset_type = {
         "hubspot": "bigquery",
         "ga4": "bigquery",
+        "woocommerce": "bigquery",
         "ecommerce": "duckdb",
         "hr": "duckdb",
     }
@@ -157,12 +168,12 @@ if __name__ == "__main__":
         type=str,
         nargs="+",
         default=["all"],
-        choices=["all", "hubspot", "ga4", "ecommerce", "hr"],
+        choices=["all", "hubspot", "ga4", "ecommerce", "hr", "woocommerce"],
     )
     args = parser.parse_args()
 
     if "all" in args.usecases:
-        usecases = ["hubspot", "ga4", "ecommerce", "hr"]
+        usecases = ["hubspot", "ga4", "ecommerce", "hr", "woocommerce"]
     else:
         usecases = args.usecases
 
@@ -193,6 +204,17 @@ if __name__ == "__main__":
         }
         # count the number of results that are failed
         for question, result in zip(data["questions"], results):
+            if (
+                result.get("status") == "finished"
+                and not result.get("error")
+                and result.get("response", [])
+            ):
+                result["response"][0]["sql"] = sqlparse.format(
+                    result["response"][0]["sql"],
+                    reindent=True,
+                    keyword_case="upper",
+                )
+
             final_results[usecase]["results"].append(
                 {
                     "question": question,
@@ -210,7 +232,11 @@ if __name__ == "__main__":
         os.makedirs("outputs")
 
     with open(
-        f"outputs/final_results_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json",
+        f"outputs/usecases_final_results_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.yaml",
         "w",
     ) as f:
-        json.dump(final_results, f, indent=2)
+        yaml.add_representer(str, str_presenter)
+        yaml.representer.SafeRepresenter.add_representer(
+            str, str_presenter
+        )  # to use with safe_dum
+        yaml.safe_dump(final_results, f, sort_keys=False, allow_unicode=True)

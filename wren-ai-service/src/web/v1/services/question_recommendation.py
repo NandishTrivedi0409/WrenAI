@@ -67,19 +67,38 @@ class QuestionRecommendation:
         max_questions: int,
         max_categories: int,
         project_id: Optional[str] = None,
+        configuration: Optional[Configuration] = Configuration(),
     ):
         try:
             retrieval_result = await self._pipelines["retrieval"].run(
                 query=candidate["question"],
                 id=project_id,
             )
-            documents = retrieval_result.get("construct_retrieval_results", [])
+            _retrieval_result = retrieval_result.get("construct_retrieval_results", {})
+            documents = _retrieval_result.get("retrieval_results", [])
+            has_calculated_field = _retrieval_result.get("has_calculated_field", False)
+            has_metric = _retrieval_result.get("has_metric", False)
+
+            sql_generation_reasoning = (
+                (
+                    await self._pipelines["sql_generation_reasoning"].run(
+                        query=candidate["question"],
+                        contexts=documents,
+                        configuration=configuration,
+                    )
+                )
+                .get("post_process", {})
+                .get("reasoning_plan")
+            )
+
             generated_sql = await self._pipelines["sql_generation"].run(
                 query=candidate["question"],
                 contexts=documents,
-                exclude=[],
-                configuration=Configuration(),
+                sql_generation_reasoning=sql_generation_reasoning,
+                configuration=configuration,
                 project_id=project_id,
+                has_calculated_field=has_calculated_field,
+                has_metric=has_metric,
             )
 
             post_process = generated_sql["post_process"]
@@ -88,7 +107,6 @@ class QuestionRecommendation:
                 return post_process
 
             valid_sql = post_process["valid_generation_results"][0]["sql"]
-            logger.debug(f"Request {request_id}: Valid SQL: {valid_sql}")
 
             # Partial update the resource
             current = self._cache[request_id]
@@ -123,6 +141,7 @@ class QuestionRecommendation:
                 input.max_questions,
                 input.max_categories,
                 input.project_id,
+                input.configuration,
             )
             for question in questions
         ]

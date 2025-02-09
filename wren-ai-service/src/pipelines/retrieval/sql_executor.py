@@ -1,6 +1,5 @@
 import logging
 import sys
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 import aiohttp
@@ -11,7 +10,6 @@ from langfuse.decorators import observe
 
 from src.core.engine import Engine
 from src.core.pipeline import BasicPipeline
-from src.utils import async_timer
 
 logger = logging.getLogger("wren-ai-service")
 
@@ -28,6 +26,8 @@ class DataFetcher:
         self,
         sql: str,
         project_id: str | None = None,
+        limit: int = 500,
+        timeout: float = 30.0,
     ):
         async with aiohttp.ClientSession() as session:
             _, data, _ = await self._engine.execute_sql(
@@ -35,20 +35,28 @@ class DataFetcher:
                 session,
                 project_id=project_id,
                 dry_run=False,
+                limit=limit,
+                timeout=timeout,
             )
 
             return {"results": data}
 
 
 ## Start of Pipeline
-@async_timer
 @observe(capture_input=False)
 async def execute_sql(
-    sql: str, data_fetcher: DataFetcher, project_id: str | None = None
+    sql: str,
+    data_fetcher: DataFetcher,
+    engine_timeout: float,
+    project_id: str | None = None,
+    limit: int = 500,
 ) -> dict:
-    logger.debug(f"Executing SQL: {sql}")
-
-    return await data_fetcher.run(sql=sql, project_id=project_id)
+    return await data_fetcher.run(
+        sql=sql,
+        project_id=project_id,
+        limit=limit,
+        timeout=engine_timeout,
+    )
 
 
 ## End of Pipeline
@@ -58,43 +66,34 @@ class SQLExecutor(BasicPipeline):
     def __init__(
         self,
         engine: Engine,
+        engine_timeout: Optional[float] = 30.0,
         **kwargs,
     ):
         self._components = {
             "data_fetcher": DataFetcher(engine=engine),
         }
 
+        self._configs = {
+            "engine_timeout": engine_timeout,
+        }
+
         super().__init__(
             AsyncDriver({}, sys.modules[__name__], result_builder=base.DictResult())
         )
 
-    def visualize(
-        self,
-        sql: str,
-        project_id: str | None = None,
-    ) -> None:
-        destination = "outputs/pipelines/retrieval"
-        if not Path(destination).exists():
-            Path(destination).mkdir(parents=True, exist_ok=True)
-
-        self._pipe.visualize_execution(
-            ["execute_sql"],
-            output_file_path=f"{destination}/sql_executor.dot",
-            inputs={"sql": sql, "project_id": project_id, **self._components},
-            show_legend=True,
-            orient="LR",
-        )
-
-    @async_timer
     @observe(name="SQL Execution")
-    async def run(self, sql: str, project_id: str | None = None) -> dict:
+    async def run(
+        self, sql: str, project_id: str | None = None, limit: int = 500
+    ) -> dict:
         logger.info("SQL Execution pipeline is running...")
         return await self._pipe.execute(
             ["execute_sql"],
             inputs={
                 "sql": sql,
                 "project_id": project_id,
+                "limit": limit,
                 **self._components,
+                **self._configs,
             },
         )
 

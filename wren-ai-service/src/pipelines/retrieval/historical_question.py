@@ -1,6 +1,5 @@
 import logging
 import sys
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hamilton import base
@@ -11,10 +10,6 @@ from langfuse.decorators import observe
 
 from src.core.pipeline import BasicPipeline
 from src.core.provider import DocumentStoreProvider, EmbedderProvider
-from src.utils import (
-    async_timer,
-    timer,
-)
 
 logger = logging.getLogger("wren-ai-service")
 
@@ -55,7 +50,6 @@ class OutputFormatter:
 
 
 ## Start of Pipeline
-@async_timer
 @observe(capture_input=False)
 async def count_documents(store: QdrantDocumentStore, id: Optional[str] = None) -> int:
     filters = (
@@ -72,7 +66,6 @@ async def count_documents(store: QdrantDocumentStore, id: Optional[str] = None) 
     return document_count
 
 
-@async_timer
 @observe(capture_input=False, capture_output=False)
 async def embedding(count_documents: int, query: str, embedder: Any) -> dict:
     if count_documents:
@@ -81,7 +74,6 @@ async def embedding(count_documents: int, query: str, embedder: Any) -> dict:
     return {}
 
 
-@async_timer
 @observe(capture_input=False)
 async def retrieval(embedding: dict, id: str, retriever: Any) -> dict:
     if embedding:
@@ -105,7 +97,6 @@ async def retrieval(embedding: dict, id: str, retriever: Any) -> dict:
     return {}
 
 
-@timer
 @observe(capture_input=False)
 def filtered_documents(retrieval: dict, score_filter: ScoreFilter) -> dict:
     if retrieval:
@@ -114,7 +105,6 @@ def filtered_documents(retrieval: dict, score_filter: ScoreFilter) -> dict:
     return {}
 
 
-@timer
 @observe(capture_input=False)
 def formatted_output(
     filtered_documents: dict, output_formatter: OutputFormatter
@@ -151,28 +141,6 @@ class HistoricalQuestion(BasicPipeline):
             AsyncDriver({}, sys.modules[__name__], result_builder=base.DictResult())
         )
 
-    def visualize(
-        self,
-        query: str,
-        id: Optional[str] = None,
-    ) -> None:
-        destination = "outputs/pipelines/retrieval"
-        if not Path(destination).exists():
-            Path(destination).mkdir(parents=True, exist_ok=True)
-
-        self._pipe.visualize_execution(
-            ["formatted_output"],
-            output_file_path=f"{destination}/historical_question.dot",
-            inputs={
-                "query": query,
-                "id": id or "",
-                **self._components,
-            },
-            show_legend=True,
-            orient="LR",
-        )
-
-    @async_timer
     @observe(name="Historical Question")
     async def run(self, query: str, id: Optional[str] = None):
         logger.info("HistoricalQuestion pipeline is running...")
@@ -191,6 +159,6 @@ if __name__ == "__main__":
 
     dry_run_pipeline(
         HistoricalQuestion,
-        "historical_question",
+        "historical_question_retrieval",
         query="this is a test query",
     )

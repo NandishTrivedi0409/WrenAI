@@ -536,6 +536,7 @@ export const typeDefs = gql`
   enum AskingTaskStatus {
     UNDERSTANDING
     SEARCHING
+    PLANNING
     GENERATING
     CORRECTING
     FINISHED
@@ -547,6 +548,24 @@ export const typeDefs = gql`
     GENERAL
     TEXT_TO_SQL
     MISLEADING_QUERY
+  }
+
+  enum ChartTaskStatus {
+    FETCHING
+    GENERATING
+    FINISHED
+    FAILED
+    STOPPED
+  }
+
+  enum ChartType {
+    BAR
+    PIE
+    LINE
+    MULTI_LINE
+    AREA
+    GROUPED_BAR
+    STACKED_BAR
   }
 
   enum ResultCandidateType {
@@ -565,6 +584,7 @@ export const typeDefs = gql`
     type: AskingTaskType
     error: Error
     candidates: [ResultCandidate!]!
+    intentReasoning: String
   }
 
   input InstantRecommendedQuestionsInput {
@@ -611,6 +631,15 @@ export const typeDefs = gql`
     summary: String
   }
 
+  input AdjustThreadResponseChartInput {
+    chartType: ChartType!
+    xAxis: String
+    yAxis: String
+    xOffset: String
+    color: String
+    theta: String
+  }
+
   input PreviewDataInput {
     responseId: Int!
     # Optional, only used for preview data of a single step
@@ -626,38 +655,62 @@ export const typeDefs = gql`
     cteName: String
   }
 
-  type ThreadResponseDetail {
-    view: ViewInfo
-    sql: String
+  enum ThreadResponseAnswerStatus {
+    NOT_STARTED
+    FETCHING_DATA
+    PREPROCESSING
+    STREAMING
+    FINISHED
+    FAILED
+    INTERRUPTED
+  }
+
+  type ThreadResponseAnswerDetail {
+    queryId: String
+    status: ThreadResponseAnswerStatus
+    error: Error
+    numRowsUsedInLLM: Int
+    content: String
+  }
+
+  type ThreadResponseBreakdownDetail {
+    queryId: String
+    status: AskingTaskStatus!
+    error: Error
     description: String
-    steps: [DetailStep!]!
+    steps: [DetailStep!]
+  }
+
+  type ThreadResponseChartDetail {
+    queryId: String
+    status: ChartTaskStatus!
+    error: Error
+    description: String
+    chartType: ChartType
+    chartSchema: JSON
+    adjustment: Boolean
   }
 
   type ThreadResponse {
     id: Int!
+    threadId: Int!
     question: String!
-    status: AskingTaskStatus!
-    detail: ThreadResponseDetail
-    error: Error
+    sql: String!
+    view: ViewInfo
+    breakdownDetail: ThreadResponseBreakdownDetail
+    answerDetail: ThreadResponseAnswerDetail
+    chartDetail: ThreadResponseChartDetail
   }
 
   # Thread only consists of basic information of a thread
   type Thread {
     id: Int!
-    sql: String!
-      @deprecated(
-        reason: "Doesn't seem to be reasonable to put a sql in a thread"
-      )
     summary: String!
   }
 
   # Detailed thread consists of thread and thread responses
   type DetailedThread {
     id: Int!
-    sql: String!
-      @deprecated(
-        reason: "Doesn't seem to be reasonable to put a sql in a thread"
-      )
     responses: [ThreadResponse!]!
   }
 
@@ -743,6 +796,69 @@ export const typeDefs = gql`
     path: String!
   }
 
+  # Dashboard
+  enum DashboardItemType {
+    BAR
+    PIE
+    LINE
+    MULTI_LINE
+    AREA
+    GROUPED_BAR
+    STACKED_BAR
+    TABLE
+    NUMBER
+  }
+
+  input DashboardItemWhereInput {
+    id: Int!
+  }
+
+  input CreateDashboardItemInput {
+    itemType: DashboardItemType!
+    responseId: Int!
+  }
+
+  input ItemLayoutInput {
+    itemId: Int!
+    x: Int!
+    y: Int!
+    w: Int!
+    h: Int!
+  }
+
+  input UpdateDashboardItemLayoutsInput {
+    layouts: [ItemLayoutInput!]!
+  }
+
+  input DeleteDashboardItemInput {
+    itemId: Int!
+  }
+
+  input PreviewItemSQLInput {
+    itemId: Int!
+    limit: Int
+  }
+
+  type DashboardItemLayout {
+    x: Int!
+    y: Int!
+    w: Int!
+    h: Int!
+  }
+
+  type DashboardItemDetail {
+    sql: String!
+    chartSchema: JSON
+  }
+
+  type DashboardItem {
+    id: Int!
+    dashboardId: Int!
+    type: DashboardItemType!
+    layout: DashboardItemLayout!
+    detail: DashboardItemDetail!
+  }
+
   # Query and Mutation
   type Query {
     # On Boarding Steps
@@ -782,6 +898,9 @@ export const typeDefs = gql`
     getThreadRecommendationQuestions(threadId: Int!): RecommendedQuestionsTask!
     getProjectRecommendationQuestions: RecommendedQuestionsTask!
     instantRecommendedQuestions(taskId: String!): RecommendedQuestionsTask!
+
+    # Dashboard
+    dashboardItems: [DashboardItem!]!
   }
 
   type Mutation {
@@ -850,6 +969,22 @@ export const typeDefs = gql`
       data: CreateThreadResponseInput!
     ): ThreadResponse!
     previewData(where: PreviewDataInput!): JSON!
+    previewBreakdownData(where: PreviewDataInput!): JSON!
+
+    # Generate Thread Response Breakdown
+    generateThreadResponseBreakdown(responseId: Int!): ThreadResponse!
+
+    # Generate Thread Response Answer
+    generateThreadResponseAnswer(responseId: Int!): ThreadResponse!
+
+    # Generate Thread Response Chart
+    generateThreadResponseChart(responseId: Int!): ThreadResponse!
+
+    # Adjust Thread Response Chart
+    adjustThreadResponseChart(
+      responseId: Int!
+      data: AdjustThreadResponseChartInput!
+    ): ThreadResponse!
 
     # Settings
     resetCurrentProject: Boolean!
@@ -868,5 +1003,13 @@ export const typeDefs = gql`
     createInstantRecommendedQuestions(
       data: InstantRecommendedQuestionsInput!
     ): Task!
+
+    # Dashboard
+    updateDashboardItemLayouts(
+      data: UpdateDashboardItemLayoutsInput!
+    ): [DashboardItem!]!
+    createDashboardItem(data: CreateDashboardItemInput!): DashboardItem!
+    deleteDashboardItem(where: DashboardItemWhereInput!): Boolean!
+    previewItemSQL(data: PreviewItemSQLInput!): JSON!
   }
 `;

@@ -1,6 +1,5 @@
 import logging
 import sys
-from pathlib import Path
 from typing import Any, Dict, List
 
 from hamilton import base
@@ -13,8 +12,7 @@ from pydantic import BaseModel
 from src.core.engine import Engine
 from src.core.pipeline import BasicPipeline
 from src.core.provider import LLMProvider
-from src.pipelines.common import SQLBreakdownGenPostProcessor
-from src.utils import async_timer, timer
+from src.pipelines.generation.utils.sql import SQLBreakdownGenPostProcessor
 from src.web.v1.services.sql_regeneration import (
     SQLExplanationWithUserCorrections,
 )
@@ -96,7 +94,6 @@ class SQLRegenerationPreprocesser:
 
 
 ## Start of Pipeline
-@timer
 @observe(capture_input=False)
 def preprocess(
     description: str,
@@ -109,7 +106,6 @@ def preprocess(
     )
 
 
-@timer
 @observe(capture_input=False)
 def sql_regeneration_prompt(
     preprocess: Dict[str, Any],
@@ -118,16 +114,14 @@ def sql_regeneration_prompt(
     return prompt_builder.run(results=preprocess["results"])
 
 
-@async_timer
 @observe(as_type="generation", capture_input=False)
 async def generate_sql_regeneration(
     sql_regeneration_prompt: dict,
     generator: Any,
 ) -> dict:
-    return await generator.run(prompt=sql_regeneration_prompt.get("prompt"))
+    return await generator(prompt=sql_regeneration_prompt.get("prompt"))
 
 
-@async_timer
 @observe(capture_input=False)
 async def sql_regeneration_post_process(
     generate_sql_regeneration: dict,
@@ -188,30 +182,6 @@ class SQLRegeneration(BasicPipeline):
             AsyncDriver({}, sys.modules[__name__], result_builder=base.DictResult())
         )
 
-    def visualize(
-        self,
-        description: str,
-        steps: List[SQLExplanationWithUserCorrections],
-        project_id: str | None = None,
-    ) -> None:
-        destination = "outputs/pipelines/generation"
-        if not Path(destination).exists():
-            Path(destination).mkdir(parents=True, exist_ok=True)
-
-        self._pipe.visualize_execution(
-            ["sql_regeneration_post_process"],
-            output_file_path=f"{destination}/sql_regeneration.dot",
-            inputs={
-                "description": description,
-                "steps": steps,
-                "project_id": project_id,
-                **self._components,
-            },
-            show_legend=True,
-            orient="LR",
-        )
-
-    @async_timer
     @observe(name="SQL-Regeneration Generation")
     async def run(
         self,

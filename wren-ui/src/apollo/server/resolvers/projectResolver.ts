@@ -106,8 +106,10 @@ export class ProjectResolver {
       language,
     });
 
-    // update project recommendation questions
-    await ctx.projectService.generateProjectRecommendationQuestions();
+    // only generating for user's data source
+    if (project.sampleDataset === null) {
+      await ctx.projectService.generateProjectRecommendationQuestions();
+    }
     return true;
   }
 
@@ -269,7 +271,13 @@ export class ProjectResolver {
       type,
       connectionInfo,
     } as ProjectData);
-    logger.debug(`Project created `);
+    logger.debug(`Project created.`);
+
+    // init dashboard
+    logger.debug('Dashboard init...');
+    await ctx.dashboardService.initDashboard();
+    logger.debug('Dashboard created.');
+
     const eventName = TelemetryEvent.CONNECTION_SAVE_DATA_SOURCE;
     const eventProperties = {
       dataSourceType: type,
@@ -623,7 +631,10 @@ export class ProjectResolver {
     const { manifest } = await ctx.mdlService.makeCurrentModelMDL();
     const deployRes = await ctx.deployService.deploy(manifest, project.id);
 
-    await ctx.projectService.generateProjectRecommendationQuestions();
+    // only generating for user's data source
+    if (project.sampleDataset === null) {
+      await ctx.projectService.generateProjectRecommendationQuestions();
+    }
     return deployRes;
   }
 

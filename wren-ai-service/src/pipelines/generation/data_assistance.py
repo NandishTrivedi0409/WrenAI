@@ -1,18 +1,15 @@
 import asyncio
 import logging
 import sys
-from pathlib import Path
 from typing import Any, Optional
 
 from hamilton import base
 from hamilton.async_driver import AsyncDriver
 from haystack.components.builders.prompt_builder import PromptBuilder
 from langfuse.decorators import observe
-from pydantic import BaseModel
 
 from src.core.pipeline import BasicPipeline
 from src.core.provider import LLMProvider
-from src.utils import async_timer, timer
 from src.web.v1.services.ask import AskHistory
 
 logger = logging.getLogger("wren-ai-service")
@@ -29,6 +26,7 @@ using the Markdown format. Your goal is to help guide user understand its databa
 - Answer must be in the same language user specified.
 - There should be proper line breaks, whitespace, and Markdown formatting(headers, lists, tables, etc.) in your response.
 - If the language is Traditional/Simplified Chinese, Korean, or Japanese, the maximum response length is 150 words; otherwise, the maximum response length is 110 words.
+- MUST NOT add SQL code in your response.
 
 ### OUTPUT FORMAT ###
 Please provide your response in proper Markdown format.
@@ -49,7 +47,6 @@ Please think step by step
 
 
 ## Start of Pipeline
-@timer
 @observe(capture_input=False)
 def prompt(
     query: str,
@@ -74,17 +71,12 @@ def prompt(
     )
 
 
-@async_timer
 @observe(as_type="generation", capture_input=False)
 async def data_assistance(prompt: dict, generator: Any, query_id: str) -> dict:
-    return await generator.run(prompt=prompt.get("prompt"), query_id=query_id)
+    return await generator(prompt=prompt.get("prompt"), query_id=query_id)
 
 
 ## End of Pipeline
-
-
-class DataAssistanceResult(BaseModel):
-    results: str
 
 
 DATA_ASSISTANCE_MODEL_KWARGS = {"response_format": {"type": "text"}}
@@ -147,34 +139,6 @@ class DataAssistance(BasicPipeline):
             except TimeoutError:
                 break
 
-    def visualize(
-        self,
-        query: str,
-        db_schemas: list[str],
-        language: str,
-        query_id: Optional[str] = None,
-        history: Optional[AskHistory] = None,
-    ) -> None:
-        destination = "outputs/pipelines/generation"
-        if not Path(destination).exists():
-            Path(destination).mkdir(parents=True, exist_ok=True)
-
-        self._pipe.visualize_execution(
-            ["data_assistance"],
-            output_file_path=f"{destination}/data_assistance.dot",
-            inputs={
-                "query": query,
-                "db_schemas": db_schemas,
-                "language": language,
-                "query_id": query_id or "",
-                "history": history,
-                **self._components,
-            },
-            show_legend=True,
-            orient="LR",
-        )
-
-    @async_timer
     @observe(name="Data Assistance")
     async def run(
         self,

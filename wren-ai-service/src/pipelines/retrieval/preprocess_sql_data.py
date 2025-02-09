@@ -1,6 +1,5 @@
 import logging
 import sys
-from pathlib import Path
 from typing import Dict
 
 import tiktoken
@@ -10,13 +9,11 @@ from langfuse.decorators import observe
 
 from src.core.pipeline import BasicPipeline
 from src.core.provider import LLMProvider
-from src.utils import timer
 
 logger = logging.getLogger("wren-ai-service")
 
 
 ## Start of Pipeline
-@timer
 @observe(capture_input=False, capture_output=False)
 def preprocess(
     sql_data: Dict,
@@ -68,23 +65,6 @@ class PreprocessSqlData(BasicPipeline):
 
         super().__init__(Driver({}, sys.modules[__name__], adapter=base.DictResult()))
 
-    def visualize(self, sql_data: Dict) -> None:
-        destination = "outputs/pipelines/retrieval"
-        if not Path(destination).exists():
-            Path(destination).mkdir(parents=True, exist_ok=True)
-
-        self._pipe.visualize_execution(
-            ["preprocess"],
-            output_file_path=f"{destination}/preprocess_sql_data.dot",
-            inputs={
-                "sql_data": sql_data,
-                **self._configs,
-            },
-            show_legend=True,
-            orient="LR",
-        )
-
-    @timer
     @observe(name="Preprocess SQL Data")
     def run(
         self,

@@ -1,10 +1,7 @@
 import logging
-import os
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Tuple
 
-from src.core.engine import Engine, EngineConfig
+from src.core.engine import Engine
 from src.core.pipeline import PipelineComponent
 from src.core.provider import DocumentStoreProvider, EmbedderProvider, LLMProvider
 from src.providers import loader
@@ -70,12 +67,16 @@ def llm_processor(entry: dict) -> dict:
     """
     others = {k: v for k, v in entry.items() if k not in ["type", "provider", "models"]}
     returned = {}
-    for model in entry["models"]:
-        model_name = f"{entry['provider']}.{model['model']}"
+    for model in entry.get("models", []):
+        model_name = f"{entry.get('provider')}.{model.get('alias', model.get('model'))}"
+        model_additional_params = {
+            k: v for k, v in model.items() if k not in ["model", "kwargs"]
+        }
         returned[model_name] = {
             "provider": entry["provider"],
             "model": model["model"],
             "kwargs": model["kwargs"],
+            **model_additional_params,
             **others,
         }
     return returned
@@ -121,11 +122,14 @@ def embedder_processor(entry: dict) -> dict:
     others = {k: v for k, v in entry.items() if k not in ["type", "provider", "models"]}
     returned = {}
     for model in entry["models"]:
-        identifier = f"{entry['provider']}.{model['model']}"
+        identifier = f"{entry['provider']}.{model.get('alias', model.get('model'))}"
+        model_additional_params = {
+            k: v for k, v in model.items() if k not in ["model", "kwargs"]
+        }
         returned[identifier] = {
             "provider": entry["provider"],
             "model": model["model"],
-            "dimension": model["dimension"],
+            **model_additional_params,
             **others,
         }
 
@@ -257,15 +261,6 @@ def pipeline_processor(entry: dict) -> dict:
     }
 
 
-_TYPE_TO_PROCESSOR = {
-    "llm": llm_processor,
-    "embedder": embedder_processor,
-    "document_store": document_store_processor,
-    "engine": engine_processor,
-    "pipeline": pipeline_processor,
-}
-
-
 @dataclass
 class Configuration:
     providers: dict
@@ -273,6 +268,14 @@ class Configuration:
 
 
 def transform(config: list[dict]) -> Configuration:
+    _TYPE_TO_PROCESSOR = {
+        "llm": llm_processor,
+        "embedder": embedder_processor,
+        "document_store": document_store_processor,
+        "engine": engine_processor,
+        "pipeline": pipeline_processor,
+    }
+
     returned = {
         "embedder": {},
         "llm": {},
@@ -295,50 +298,6 @@ def transform(config: list[dict]) -> Configuration:
         providers={k: v for k, v in returned.items() if k != "pipeline"},
         pipelines=returned["pipeline"],
     )
-
-
-def init_providers(
-    engine_config: EngineConfig,
-) -> Tuple[LLMProvider, EmbedderProvider, DocumentStoreProvider, Engine]:
-    # DEPRECATED: use generate_components instead
-    logger.info("Initializing providers...")
-    loader.import_mods()
-
-    llm_provider = loader.get_provider(os.getenv("LLM_PROVIDER", "openai_llm"))()
-    embedder_provider = loader.get_provider(
-        os.getenv("EMBEDDER_PROVIDER", "openai_embedder")
-    )()
-    document_store_provider = loader.get_provider(
-        os.getenv("DOCUMENT_STORE_PROVIDER", "qdrant")
-    )()
-    engine = loader.get_provider(engine_config.provider)(**engine_config.config)
-
-    return llm_provider, embedder_provider, document_store_provider, engine
-
-
-class Wrapper(Mapping):
-    def __init__(self):
-        from src.utils import load_env_vars
-
-        load_env_vars()
-
-        self.value = PipelineComponent(
-            *init_providers(
-                engine_config=EngineConfig(provider=os.getenv("ENGINE", "wren_ui"))
-            )
-        )
-
-    def __getitem__(self, key):
-        return self.value
-
-    def __repr__(self):
-        return f"Wrapper({self.value})"
-
-    def __iter__(self):
-        return iter(self.value)
-
-    def __len__(self):
-        return len(self.value)
 
 
 def generate_components(configs: list[dict]) -> dict[str, PipelineComponent]:
@@ -370,17 +329,6 @@ def generate_components(configs: list[dict]) -> dict[str, PipelineComponent]:
     """
     loader.import_mods()
 
-    # DEPRECATED: remove this fallback in the future
-    if not configs:
-        message = """
-        Warning: No configuration provided. Falling back to environment variables for settings.
-        This is a legacy approach and will be deprecated soon. Please refer to the README for
-        instructions on migrating to the new configuration format. It is strongly recommended
-        to update your configuration to ensure future compatibility and take advantage of new features.
-        """
-        logger.warning(message)
-        return Wrapper()
-
     config = transform(configs)
 
     instantiated_providers = {
@@ -391,19 +339,21 @@ def generate_components(configs: list[dict]) -> dict[str, PipelineComponent]:
         for type, configs in config.providers.items()
     }
 
-    def get(type: str, components: dict):
+    def get(type: str, components: dict, instantiated_providers: dict):
         identifier = components.get(type)
         return instantiated_providers[type].get(identifier)
 
-    def componentize(components: dict):
+    def componentize(components: dict, instantiated_providers: dict):
         return PipelineComponent(
-            embedder_provider=get("embedder", components),
-            llm_provider=get("llm", components),
-            document_store_provider=get("document_store", components),
-            engine=get("engine", components),
+            embedder_provider=get("embedder", components, instantiated_providers),
+            llm_provider=get("llm", components, instantiated_providers),
+            document_store_provider=get(
+                "document_store", components, instantiated_providers
+            ),
+            engine=get("engine", components, instantiated_providers),
         )
 
     return {
-        pipe_name: componentize(components)
+        pipe_name: componentize(components, instantiated_providers)
         for pipe_name, components in config.pipelines.items()
     }

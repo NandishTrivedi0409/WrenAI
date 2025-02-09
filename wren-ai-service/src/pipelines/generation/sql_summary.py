@@ -1,6 +1,5 @@
 import logging
 import sys
-from pathlib import Path
 from typing import Any, List
 
 import orjson
@@ -13,7 +12,6 @@ from pydantic import BaseModel
 
 from src.core.pipeline import BasicPipeline
 from src.core.provider import LLMProvider
-from src.utils import async_timer, timer
 
 logger = logging.getLogger("wren-ai-service")
 
@@ -74,7 +72,6 @@ class SQLSummaryPostProcessor:
 
 
 ## Start of Pipeline
-@timer
 @observe(capture_input=False)
 def prompt(
     query: str,
@@ -89,13 +86,11 @@ def prompt(
     )
 
 
-@async_timer
 @observe(as_type="generation", capture_input=False)
 async def generate_sql_summary(prompt: dict, generator: Any) -> dict:
-    return await generator.run(prompt=prompt.get("prompt"))
+    return await generator(prompt=prompt.get("prompt"))
 
 
-@timer
 def post_process(
     generate_sql_summary: dict,
     sqls: List[str],
@@ -143,30 +138,6 @@ class SQLSummary(BasicPipeline):
             AsyncDriver({}, sys.modules[__name__], result_builder=base.DictResult())
         )
 
-    def visualize(
-        self,
-        query: str,
-        sqls: List[str],
-        language: str,
-    ) -> None:
-        destination = "outputs/pipelines/generation"
-        if not Path(destination).exists():
-            Path(destination).mkdir(parents=True, exist_ok=True)
-
-        self._pipe.visualize_execution(
-            ["post_process"],
-            output_file_path=f"{destination}/sql_summary.dot",
-            inputs={
-                "query": query,
-                "sqls": sqls,
-                "language": language,
-                **self._components,
-            },
-            show_legend=True,
-            orient="LR",
-        )
-
-    @async_timer
     @observe(name="SQL Summary")
     async def run(
         self,

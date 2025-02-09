@@ -6,7 +6,7 @@ from langfuse.decorators import observe
 from pydantic import BaseModel
 
 from src.core.pipeline import BasicPipeline
-from src.utils import async_timer, remove_sql_summary_duplicates, trace_metadata
+from src.utils import trace_metadata
 from src.web.v1.services import Configuration
 from src.web.v1.services.ask import AskError, AskHistory
 from src.web.v1.services.ask_details import SQLBreakdown
@@ -23,7 +23,6 @@ class SqlExpansionRequest(BaseModel):
     project_id: Optional[str] = None
     mdl_hash: Optional[str] = None
     thread_id: Optional[str] = None
-    user_id: Optional[str] = None
     configurations: Optional[Configuration] = Configuration()
 
     @property
@@ -94,12 +93,6 @@ class SqlExpansionService:
 
         return False
 
-    def _get_failed_dry_run_results(self, invalid_generation_results: list[dict]):
-        return list(
-            filter(lambda x: x["type"] == "DRY_RUN", invalid_generation_results)
-        )
-
-    @async_timer
     @observe(name="SQL Expansion")
     @trace_metadata
     async def sql_expansion(
@@ -114,6 +107,7 @@ class SqlExpansionService:
                 "error_message": "",
             },
         }
+        error_message = ""
 
         try:
             query_id = sql_expansion_request.query_id
@@ -133,7 +127,10 @@ class SqlExpansionService:
                     query=query_for_retrieval,
                     id=sql_expansion_request.project_id,
                 )
-                documents = retrieval_result.get("construct_retrieval_results", [])
+                _retrieval_result = retrieval_result.get(
+                    "construct_retrieval_results", {}
+                )
+                documents = _retrieval_result.get("retrieval_results", [])
 
                 if not documents:
                     logger.exception(
@@ -161,7 +158,7 @@ class SqlExpansionService:
                     contexts=documents,
                     history=sql_expansion_request.history,
                     project_id=sql_expansion_request.project_id,
-                    timezone=sql_expansion_request.configurations.timezone,
+                    configuration=sql_expansion_request.configurations,
                 )
 
                 valid_generation_results = []
@@ -170,21 +167,27 @@ class SqlExpansionService:
                 ]["valid_generation_results"]:
                     valid_generation_results += sql_valid_results
 
-                if failed_dry_run_results := self._get_failed_dry_run_results(
-                    sql_expansion_generation_results["post_process"][
-                        "invalid_generation_results"
-                    ]
-                ):
-                    sql_correction_results = await self._pipelines[
-                        "sql_correction"
-                    ].run(
-                        contexts=documents,
-                        invalid_generation_results=failed_dry_run_results,
-                        project_id=sql_expansion_request.project_id,
-                    )
-                    valid_generation_results += sql_correction_results["post_process"][
-                        "valid_generation_results"
-                    ]
+                if failed_dry_run_results := sql_expansion_generation_results[
+                    "post_process"
+                ]["invalid_generation_results"]:
+                    if failed_dry_run_results[0]["type"] != "TIME_OUT":
+                        sql_correction_results = await self._pipelines[
+                            "sql_correction"
+                        ].run(
+                            contexts=documents,
+                            invalid_generation_results=failed_dry_run_results,
+                            project_id=sql_expansion_request.project_id,
+                        )
+                        if sql_correction_valid_results := sql_correction_results[
+                            "post_process"
+                        ]["valid_generation_results"]:
+                            valid_generation_results += sql_correction_valid_results
+                        elif failed_dry_run_results := sql_correction_results[
+                            "post_process"
+                        ]["invalid_generation_results"]:
+                            error_message = failed_dry_run_results[0]["error"]
+                    else:
+                        error_message = failed_dry_run_results[0]["error"]
 
                 valid_sql_summary_results = []
                 if valid_generation_results:
@@ -196,10 +199,6 @@ class SqlExpansionService:
                     valid_sql_summary_results = sql_summary_results["post_process"][
                         "sql_summary_results"
                     ]
-                    # remove duplicates of valid_sql_summary_results, which consists of a sql and a summary
-                    valid_sql_summary_results = remove_sql_summary_duplicates(
-                        valid_sql_summary_results
-                    )
 
                 if not valid_sql_summary_results:
                     logger.exception(
@@ -209,10 +208,11 @@ class SqlExpansionService:
                         status="failed",
                         error=AskError(
                             code="NO_RELEVANT_SQL",
-                            message="No relevant SQL",
+                            message=error_message or "No relevant SQL",
                         ),
                     )
                     results["metadata"]["error_type"] = "NO_RELEVANT_SQL"
+                    results["metadata"]["error_message"] = error_message
                     return results
 
                 api_results = SqlExpansionResultResponse.SqlExpansionResult(
@@ -220,7 +220,7 @@ class SqlExpansionService:
                     description="",
                     steps=[
                         {
-                            "sql": valid_generation_results[0]["sql"],
+                            "sql": valid_sql_summary_results[0]["sql"],
                             "summary": valid_sql_summary_results[0]["summary"],
                             "cte_name": "",
                         }
