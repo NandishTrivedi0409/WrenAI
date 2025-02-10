@@ -1,11 +1,10 @@
-version: "3"
 
 volumes:
   data:
 
 networks:
   wren:
-    driver: bridge
+    external: true
 
 services:
   bootstrap:
